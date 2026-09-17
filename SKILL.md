@@ -10,24 +10,25 @@ model knowledge of a live patch is always stale.
 
 ## Step 0 — locate the scripts (once per session)
 
-**Never call these scripts with a relative path**: the session's working directory is not the skill
-directory, and `python scripts/lolmeta.py` fails with `can't open file`.
+**Never use a relative path** (`python scripts/lolmeta.py` dies with `can't open file`: the session's cwd
+is not the skill directory). **Do not rely on `$HOME` either** — on Windows Git Bash it is frequently
+empty; use `~` or `$USERPROFILE`, which still resolve.
 
 ```bash
-ls -d "$HOME/.agents/skills/lol-data-miner" 2>/dev/null \
-  || ls -d .claude/skills/lol-data-miner 2>/dev/null \
-  || ls -d .agents/skills/lol-data-miner 2>/dev/null
+S=$(ls -d ~/.agents/skills/lol-data-miner 2>/dev/null \
+    || ls -d "$USERPROFILE"/.agents/skills/lol-data-miner 2>/dev/null \
+    || ls -d .claude/skills/lol-data-miner 2>/dev/null)
+echo "skill dir: $S"
 ```
 
-Use whatever it prints as `<SKILL>` below (global installs normally land in `~/.agents/skills/lol-data-miner`).
-
-- Git Bash / macOS / Linux: `python "$HOME/.agents/skills/lol-data-miner/scripts/lolmeta.py" …`
-- Windows shells: `python "C:/Users/<you>/.agents/skills/lol-data-miner/scripts/lolmeta.py" …`
+If that prints nothing, find it with your own file tools (glob for
+`**/.agents/skills/lol-data-miner/scripts/lolmeta.py`) and use that absolute path. Every command below
+assumes `S` is set.
 
 ## Step 1 — one command gets everything
 
 ```bash
-python "<SKILL>/scripts/lolmeta.py" refresh
+python "$S/scripts/lolmeta.py" refresh
 ```
 
 Prints the patch (e.g. `26.18` / Data Dragon `16.18.1`), augment roster counts, item counts, the tier
@@ -38,12 +39,12 @@ distribution and the top augments by performance, then tells you the next comman
 
 | Need | Command |
 |---|---|
-| Augments for one champion | `… lolmeta.py invert --champion 提莫` |
-| Full tier list + both augment rankings | `… lolmeta.py report` |
-| What changed this patch | `… lolmeta.py notes 37096116` (static page id) |
-| Mode item ids and prices | `… lolmeta.py items` |
-| Roster + rarity per mode | `… lolmeta.py lists` |
-| Champion tier list only | `… lolmeta.py champions` |
+| Augments for one champion | `python "$S/scripts/lolmeta.py" invert --champion 提莫` |
+| Full tier list + both augment rankings | `python "$S/scripts/lolmeta.py" report` |
+| What changed this patch | `python "$S/scripts/lolmeta.py" notes 37096116` (static page id) |
+| Mode item ids and prices | `python "$S/scripts/lolmeta.py" items` |
+| Roster + rarity per mode | `python "$S/scripts/lolmeta.py" lists` |
+| Champion tier list only | `python "$S/scripts/lolmeta.py" champions` |
 
 `invert` accepts the champion's name (`提莫`), their title (`迅捷斥候`) or the English key (`teemo`) —
 all three resolve. Community-only nicknames (`女枪`, `VN`) do not; the error says so and tells you what works.
