@@ -8,32 +8,31 @@ description: "Mine League of Legends patch data (ARAM Mayhem / 海克斯大乱�
 One command pulls the current patch; two more answer champion questions. Pull first, answer second —
 model knowledge of a live patch is always stale.
 
-## Step 0 — locate the scripts (once per session)
+## Step 0 — two path traps to avoid
 
-**Never use a relative path** (`python scripts/lolmeta.py` dies with `can't open file`: the session's cwd
-is not the skill directory). **Do not rely on `$HOME` either** — on Windows Git Bash it is frequently
-empty; use `~` or `$USERPROFILE`, which still resolve.
+- **Never call the script by relative path.** `python scripts/lolmeta.py` dies with `can't open file` —
+  the session's working directory is not the skill directory.
+- **Never rely on `$HOME`.** On Windows Git Bash it is frequently empty (verified: `HOME=` while
+  `~` and `$USERPROFILE` both resolve). Use `~` / `$USERPROFILE`, or your own file tools.
+
+## Step 1 — pull the patch (one shell call)
+
+Copy this as-is: the first line resolves the skill directory, the second pulls everything.
 
 ```bash
 S=$(ls -d ~/.agents/skills/lol-data-miner 2>/dev/null \
     || ls -d "$USERPROFILE"/.agents/skills/lol-data-miner 2>/dev/null \
     || ls -d .claude/skills/lol-data-miner 2>/dev/null)
-echo "skill dir: $S"
-```
-
-If that prints nothing, find it with your own file tools (glob for
-`**/.agents/skills/lol-data-miner/scripts/lolmeta.py`) and use that absolute path. Every command below
-assumes `S` is set.
-
-## Step 1 — one command gets everything
-
-```bash
 python "$S/scripts/lolmeta.py" refresh
 ```
 
-Prints the patch (e.g. `26.18` / Data Dragon `16.18.1`), augment roster counts, item counts, the tier
-distribution and the top augments by performance, then tells you the next command. Takes ~6 s cold,
-~0.2 s from cache (15 min TTL; `--cache-ttl` / `--force` to control). Output JSON lands in `<SKILL>/out/`.
+If `python` is not on PATH, use `py` (Windows) or `python3` (Unix). If `$S` comes back empty, locate the
+skill with your own file tools (glob for `**/.agents/skills/lol-data-miner/scripts/lolmeta.py`) and pass
+that absolute path instead.
+
+`refresh` prints the patch (e.g. `26.18` / Data Dragon `16.18.1`), augment roster counts, item counts, the
+tier distribution and the top augments by performance, then names the next command. ~6 s cold, ~0.2 s from
+cache (15 min TTL; `--cache-ttl` / `--force` to control). JSON lands in `<skill>/out/`.
 
 ## Step 2 — answer the question
 
