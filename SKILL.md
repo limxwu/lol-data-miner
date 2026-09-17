@@ -73,4 +73,6 @@ blocked or a metric is unavailable, say so explicitly instead of substituting a 
   installing. It is the fastest way to catch broken frontmatter or a moved `SKILL.md`.
 - **Data drifts inside a patch.** op.gg refreshes continuously, so two pulls minutes apart differ in the
   decimals and can shift marginal tier buckets. Re-pull before quoting numbers.
+- **Restart the agent session after installing.** Skill registries are scanned at startup, so a freshly
+  installed skill is not visible in `skill://` until the session (process) restarts.
 - **`out/` stays gitignored.** Publish the method, never the snapshot.

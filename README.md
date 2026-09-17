@@ -48,6 +48,21 @@ python scripts/fetch_cdragon.py notes 37096116              # official CN patch 
 Requirements: Python 3.10+ and the system `curl` (present on Windows 10+). No API keys, no pip installs —
 standard library only.
 
+## Installing
+
+```bash
+npx skills add limxwu/lol-data-miner           # project-local
+npx skills add limxwu/lol-data-miner -g --yes  # global (~/.agents/skills, symlinked into agent dirs)
+npx skills add limxwu/lol-data-miner --list    # clone + parse without installing
+```
+
+Two things worth knowing:
+
+- **Restart your agent session afterwards.** Skill registries are scanned at startup; a freshly installed
+  skill does not appear until the process restarts.
+- **`--list` is the fastest sanity check** — it clones the repo and parses the frontmatter without
+  installing, which catches a broken `description` before anyone else hits it.
+
 ## What it knows that is easy to get wrong
 
 | Trap | Reality |
