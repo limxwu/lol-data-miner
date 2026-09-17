@@ -1,0 +1,5 @@
+# fetched data snapshots stay local: this repo publishes the METHOD, not the data
+out/
+__pycache__/
+*.pyc
+.venv/
