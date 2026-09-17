@@ -90,5 +90,6 @@ collapse blank lines. That recovers patch-note bodies, augment pool edits and bu
 ## 6. Compliance
 
 - Publish the **method**, never a scraped data snapshot: third-party numbers belong to their sites and go stale.
-- Keep requests minimal and sequential; the scripts accept `--delay` for politeness.
+- Keep requests minimal; `lolmeta.py` caches every response on disk (15 min default) so repeated analysis
+  costs no extra requests to anyone.
 - Game data is Riot's; this tool only reads public endpoints.

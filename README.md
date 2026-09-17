@@ -27,23 +27,22 @@ Everything is reproducible from public, key-less endpoints.
 
 ## Usage
 
+One entry point, called by absolute path from any working directory:
+
 ```bash
-# 1. patch check (always first)
-python scripts/fetch_cdragon.py versions
+# everything, one command: patch, roster, items, tier list, augment stats
+python "<skill>/scripts/lolmeta.py" refresh
 
-# 2. mode meta
-python scripts/fetch_opgg.py champions --mode aram-mayhem   # tier list -> out/opgg_aram_mayhem_champions.json
-python scripts/fetch_opgg.py augments  --mode aram-mayhem   # augment stats -> out/opgg_aram_mayhem_augments.json
-python scripts/fetch_opgg.py report    --mode aram-mayhem   # human-readable summary
-
-# 3. "what should I pick on this champion"
-python scripts/fetch_opgg.py invert --champion 迅捷斥候
-
-# 4. authoritative client data
-python scripts/fetch_cdragon.py lists                       # roster + rarity per mode
-python scripts/fetch_cdragon.py items                       # item IDs, localized names, mode prices
-python scripts/fetch_cdragon.py notes 37096116              # official CN patch notes -> text
+# then answer the actual question
+python "<skill>/scripts/lolmeta.py" invert --champion 提莫      # augments for one champion
+python "<skill>/scripts/lolmeta.py" report                     # full tier list + both rankings
+python "<skill>/scripts/lolmeta.py" notes 37096116             # official CN patch notes -> text
+python "<skill>/scripts/lolmeta.py" items                      # item ids + mode prices
+python "<skill>/scripts/lolmeta.py" lists                      # augment roster + rarity per mode
 ```
+
+`invert` resolves the champion name (`提莫`), their title (`迅捷斥候`) or the English key (`teemo`).
+Other modes: `--mode arena|aram|aram-mayhem-classic`. Cold `refresh` takes ~6 s, cached repeats ~0.2 s.
 
 Requirements: Python 3.10+ and the system `curl` (present on Windows 10+). No API keys, no pip installs —
 standard library only.
@@ -87,7 +86,8 @@ Details in [`references/`](references/).
 ## Compliance
 
 Publishes the **method**, never a scraped data snapshot — third-party numbers belong to their sites and go
-stale within a patch. Requests are minimal and sequential; `--delay` is available for politeness.
+stale within a patch. Responses are cached on disk (15 min default), so repeated analysis costs no extra
+requests to anyone.
 
 Not endorsed by or affiliated with Riot Games. League of Legends is a trademark of Riot Games, Inc.
 
