@@ -72,7 +72,8 @@ class FetchError(RuntimeError):
 def _curl(url: str, timeout: int) -> bytes | None:
     try:
         proc = subprocess.run(
-            ["curl", "--compressed", "-sS", "-L", "--max-time", str(timeout), "-A", UA, url],
+            ["curl", "--compressed", "-sS", "-L", "--retry", "2", "--retry-delay", "1",
+             "--connect-timeout", "8", "--max-time", str(timeout), "-A", UA, url],
             capture_output=True,
         )
     except FileNotFoundError:
@@ -91,8 +92,13 @@ def _urllib(url: str, timeout: int) -> bytes:
         return res.read()
 
 
-def fetch(url: str, timeout: int = 120, cache_ttl: int = 0) -> bytes:
-    """GET with a disk cache. `cache_ttl=0` bypasses; a negative TTL caches forever."""
+def fetch(url: str, timeout: int = 45, cache_ttl: int = 0, allow_stale: bool = False) -> bytes:
+    """GET with a disk cache.
+
+    `cache_ttl=0` bypasses the TTL check; negative caches forever. `allow_stale=True` falls back to a
+    previously cached copy when the network fails, so one slow host degrades a field instead of the
+    whole command.
+    """
     CACHE.mkdir(parents=True, exist_ok=True)
     key = CACHE / (hashlib.sha1(url.encode()).hexdigest() + ".bin")
     if cache_ttl != 0 and key.exists():
@@ -103,15 +109,18 @@ def fetch(url: str, timeout: int = 120, cache_ttl: int = 0) -> bytes:
         raw = _curl(url, timeout)
         if raw is None:
             raw = _urllib(url, timeout)
-    except Exception as exc:  # noqa: BLE001 - surfaced as an actionable message below
+    except Exception as exc:  # noqa: BLE001 - surfaced as an actionable message
+        if allow_stale and key.exists():
+            sys.stderr.write(f"warn: network failed, using cached copy for {url.rsplit('/', 1)[-1]}\n")
+            return key.read_bytes()
         raise FetchError(f"network failed for {url}: {type(exc).__name__}: {exc}") from exc
     key.write_bytes(raw)
     return raw
 
 
-def fetch_json(url: str, timeout: int = 120, cache_ttl: int = 0):
+def fetch_json(url: str, timeout: int = 45, cache_ttl: int = 0, allow_stale: bool = False):
     try:
-        return json.loads(fetch(url, timeout, cache_ttl).decode("utf-8", "replace"))
+        return json.loads(fetch(url, timeout, cache_ttl, allow_stale).decode("utf-8", "replace"))
     except json.JSONDecodeError as exc:
         raise FetchError(f"{url} did not return JSON ({exc}). Endpoint may have moved.") from exc
 
@@ -233,7 +242,7 @@ def parse_augments(payload: str) -> list[dict]:
 
 def opgg_page(mode: str, locale: str, ttl: int) -> str:
     url = f"https://op.gg/{opgg_locale(locale)}/lol/modes/{mode}"
-    html = fetch(url, timeout=180, cache_ttl=ttl).decode("utf-8", "replace")
+    html = fetch(url, timeout=60, cache_ttl=ttl, allow_stale=True).decode("utf-8", "replace")
     if "__next_f" not in html:
         raise FetchError(
             f"op.gg returned a page without its data payload at {url}. Either the mode slug is wrong "
@@ -265,15 +274,38 @@ def cache_name(mode: str, kind: str) -> str:
     return f"opgg_{mode.replace('-', '_')}_{kind}.json"
 
 
-def pull_client(locale: str, ttl: int) -> dict:
-    version = fetch_json(f"{DDRAGON}/api/versions.json", cache_ttl=ttl)[0]
+def pull_client(locale: str, ttl: int, version: str | None = None) -> dict:
+    """Every source degrades independently: one slow host must not sink the whole command."""
+    if version is None:
+        try:
+            version = fetch_json(f"{DDRAGON}/api/versions.json", 30, ttl, allow_stale=True)
+        except FetchError as exc:
+            sys.stderr.write(f"warn: version lookup failed ({exc})\n")
+            version = None
+
+    def grab(url: str, timeout: int):
+        try:
+            return fetch_json(url, timeout, ttl, allow_stale=True)
+        except FetchError as exc:
+            sys.stderr.write(f"warn: {url.rsplit('/', 1)[-1]} unavailable ({exc})\n")
+            return None
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        f_lists = pool.submit(fetch_json, f"{GAME_DATA}/{norm_locale(locale)}/v1/augment-lists.json", 120, ttl)
-        f_roster = pool.submit(fetch_json, f"{GAME_DATA}/{norm_locale(locale)}/v1/cherry-augments.json", 120, ttl)
-        f_client = pool.submit(fetch_json, f"{GAME_DATA}/{norm_locale(locale)}/v1/items.json", 120, ttl)
-        f_sr = pool.submit(fetch_json, f"{DDRAGON}/cdn/{version}/data/{ddragon_locale(locale)}/item.json", 120, ttl)
-        lists, roster, client_items, sr_items = f_lists.result(), f_roster.result(), \
-            f_client.result(), f_sr.result()
+        futures = {
+            "lists": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/augment-lists.json", 30),
+            "roster": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/cherry-augments.json", 45),
+            "clientItems": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/items.json", 60),
+        }
+        if version:
+            futures["srItems"] = pool.submit(
+                grab, f"{DDRAGON}/cdn/{version}/data/{ddragon_locale(locale)}/item.json", 60)
+        got = {name: fut.result() for name, fut in futures.items()}
+    got.setdefault("srItems", None)
+
+    missing = [name for name, value in got.items() if value is None] + ([] if version else ["version"])
+    lists = got["lists"] or []
+    roster = got["roster"] or []
+    client_items = got["clientItems"] or []
 
     by_id = {a["augmentNameId"]: a for a in roster}
     modes = []
@@ -295,12 +327,13 @@ def pull_client(locale: str, ttl: int) -> dict:
     prismatic = [i for i in client_items if str(i.get("id", "")).startswith("228")]
     payload = {
         "ddragonVersion": version,
-        "locale": locale,
-        "srItemCount": len(sr_items["data"]),
+        "locale": norm_locale(locale),
+        "srItemCount": len((got["srItems"] or {}).get("data", {})),
         "modes": modes,
         "modeVariants": [{"id": i["id"], "name": i["name"], "price": i["priceTotal"]}
                          for i in sorted(variants, key=lambda x: -x["priceTotal"])],
         "prismaticPool": [{"id": i["id"], "name": i["name"], "price": i["priceTotal"]} for i in prismatic],
+        "unavailable": missing,
     }
     save(f"client_{norm_locale(locale)}.json", payload)
     return payload
@@ -312,19 +345,27 @@ def cmd_refresh(args) -> None:
     """The one command a fresh session needs."""
     started = time.time()
     print(f"# league patch pull — mode={args.mode} locale={args.locale}\n")
-    version = fetch_json(f"{DDRAGON}/api/versions.json", cache_ttl=args.cache_ttl)[0]
-    major, minor = version.split(".")[:2]
-    patch = f"26.{minor}" if major == "16" else f"{major}.{minor}"
-    print(f"patch        : {patch}  (Data Dragon {version})")
+    try:
+        version = fetch_json(f"{DDRAGON}/api/versions.json", 30, args.cache_ttl, allow_stale=True)[0]
+        major, minor = version.split(".")[:2]
+        patch = f"26.{minor}" if major == "16" else f"{major}.{minor}"
+        print(f"patch        : {patch}  (Data Dragon {version})")
+    except FetchError as exc:
+        version, patch = None, None
+        print(f"patch        : unknown — {exc}")
 
-    client = pull_client(args.locale, args.cache_ttl)
+    client = pull_client(args.locale, args.cache_ttl, version=version)
     for mode in client["modes"]:
         if mode["mode"] in ("KIWI", "CHERRY"):
             r = mode["rarity"]
             print(f"roster {mode['mode']:<7}: {mode['total']} augments "
                   f"(Silver {r.get('Silver', 0)} / Gold {r.get('Gold', 0)} / Prismatic {r.get('Prismatic', 0)})")
-    print(f"items        : {client['srItemCount']} SR | {len(client['modeVariants'])} mode variants "
-          f"| {len(client['prismaticPool'])} prismatic")
+    if client["modeVariants"]:
+        print(f"items        : {client['srItemCount']} SR | {len(client['modeVariants'])} mode variants "
+              f"| {len(client['prismaticPool'])} prismatic")
+    if client["unavailable"]:
+        print(f"! partial pull: {', '.join(client['unavailable'])} unavailable — "
+              f"answer without those numbers and say they are missing")
 
     try:
         meta = pull_meta(args.mode, args.locale, args.cache_ttl, force=args.force)
@@ -432,6 +473,9 @@ def cmd_lists(args) -> None:
 
 def cmd_items(args) -> None:
     payload = pull_client(args.locale, args.cache_ttl)
+    if not payload["modeVariants"]:
+        raise FetchError(f"client item data unavailable this run ({', '.join(payload['unavailable']) or 'unknown'}). "
+                         f"Retry, or re-run with --force.")
     print(f"SR items: {payload['srItemCount']} | mode variants: {len(payload['modeVariants'])} "
           f"| prismatic pool: {len(payload['prismaticPool'])}")
     for item in [i for i in payload["modeVariants"] if i["price"] >= 3000]:
