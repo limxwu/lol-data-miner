@@ -1,6 +1,6 @@
 ---
 name: lol-data-miner
-description: Mine League of Legends patch data (ARAM Mayhem / 海克斯大乱斗, Arena / 斗魂竞技场, ARAM, SR) from authoritative sources and turn it into grounded meta analysis. Use when asked about LoL patch notes, augment / 强化符文 / 海克斯 tiers, champion tiers, item prices in a mode, champion counters or builds, or "which augment should I pick" — i.e. whenever an answer must be accurate for the CURRENT patch instead of from model memory. Also use to refresh stale LoL data after a patch. Triggers: 海克斯大乱斗, 斗魂竞技场, 极地大乱斗, 加强符文, 强化符文, 符文推荐, 英雄梯队, 出装, 克制, 版本公告, ARAM Mayhem, Arena, augment tier list, patch meta.
+description: "Mine League of Legends patch data (ARAM Mayhem / 海克斯大乱斗, Arena / 斗魂竞技场, ARAM, SR) from authoritative sources and turn it into grounded meta analysis. Use when asked about LoL patch notes, augment / 强化符文 / 海克斯 tiers, champion tiers, item prices in a mode, champion counters or builds, or 'which augment should I pick' — i.e. whenever an answer must be accurate for the CURRENT patch instead of from model memory. Also use to refresh stale LoL data after a patch. Triggers — 海克斯大乱斗, 斗魂竞技场, 极地大乱斗, 强化符文, 符文推荐, 英雄梯队, 出装, 克制, 版本公告, ARAM Mayhem, Arena, augment tier list, patch meta."
 ---
 
 # LoL Patch Data Miner
@@ -64,3 +64,13 @@ blocked or a metric is unavailable, say so explicitly instead of substituting a 
 - `references/mode-internals.md` — mode codenames, map IDs, rarity encoding, item ID ranges, CN↔global names.
 - `references/analysis-playbook.md` — the six-step analysis + answer templates.
 - `scripts/fetch_opgg.py`, `scripts/fetch_cdragon.py` — the pullers (stdlib + system `curl`).
+
+## Maintenance (whoever edits this file)
+
+- **Keep the frontmatter `description` quoted.** A bare value containing `: ` (e.g. `Triggers: …`) fails the
+  skills CLI's YAML parse and the skill is skipped silently — verified the hard way.
+- **Verify after every edit**: `npx skills add limxwu/lol-data-miner --list` clones and parses without
+  installing. It is the fastest way to catch broken frontmatter or a moved `SKILL.md`.
+- **Data drifts inside a patch.** op.gg refreshes continuously, so two pulls minutes apart differ in the
+  decimals and can shift marginal tier buckets. Re-pull before quoting numbers.
+- **`out/` stays gitignored.** Publish the method, never the snapshot.
