@@ -53,7 +53,54 @@ default (CommunityDragon serves it at 11–90 KB/s from CN — 18 s / 8 s / time
 Other modes: add `--mode arena` / `--mode aram` / `--mode aram-mayhem-classic`. Other locales: `--locale en`.
 Item prices live behind `items`; if it fails, retry or `--force` — the roster and tier data are unaffected.
 
-## Step 3 — only now open a reference
+## Step 3 — fuse external guides (search the web, then verify it)
+
+The data tells you *what is strong*; guides and videos tell you *how people actually play it* — build
+orders, combo lines, engage timing, comp archetypes the tier list cannot express. So search for them:
+
+```
+web_search "海克斯大乱斗 <champion> 攻略 <patch>"      # or: ARAM Mayhem <champion> guide
+web_search "海克斯大乱斗 套路 流派 出装思路"
+```
+
+**Then verify every name before you repeat it.** Guides mix up modes and invent augment names; this is
+measured, not hypothetical. Patch 26.18 sample from real search results:
+
+| Named in guides found by search | Client roster says |
+|---|---|
+| 自我毁灭 / 最终都市列车 / 毁坏仪式 / 物法双修 / 心之钢 / 盾魔转 | not in KIWI at all |
+| 小丑学院 / 俯冲轰炸 / 钢化你心 / 会心治疗 / 超强大脑 / 珠光护手 | real |
+
+```bash
+python "$S/scripts/lolmeta.py" verify 自我毁灭 小丑学院 最终都市列车    # --with-items to include items
+```
+
+`verify` reports three outcomes: `ok` (exists in this mode), `MISLEAD` (real, but in a *different* mode —
+usually Arena, so the guide is describing another mode), `NOT FOUND` (with closest real names suggested).
+**Rule: never repeat a name that fails.** Restate the *pattern* ("stack-on-kill augments", "crit-to-heal"),
+not the invented label.
+
+## When to refresh (and when the cache is already correct)
+
+Refresh is governed by *what actually changes*, not by a single timer:
+
+| Data | How often it really changes | Policy in `lolmeta.py` |
+|---|---|---|
+| Patch number (Data Dragon `versions.json`) | every ~2 weeks | 30 min TTL; it is the invalidation key for everything else |
+| Client roster — augment names + rarity (`cherry-augments.json`, `augment-lists.json`) | only on patch day | **keyed by patch**, 12 h fallback — a patch-26.18 pull stays valid all patch |
+| Client items — ids + mode prices | only on patch day | **keyed by patch**, pulled only by `items` |
+| op.gg tier list + augment performance/pick | recomputed continuously | 15 min TTL **and** patch-stamped: a patch bump invalidates it immediately |
+| Official patch notes | never (static page) | cached per docid |
+
+So: **inside one patch, do not re-pull the client data at all** — it is already correct. The only thing
+worth re-pulling between games is op.gg's numbers, and only after ~15 minutes.
+
+- Patch changed → everything self-invalidates; just run `refresh`.
+- Same patch, want the newest op.gg numbers → `refresh` (15 min TTL) or `--cache-ttl 0`.
+- Need item prices → `items` (the one slow call; then patch-cached).
+- Stale cache after a network failure → the last good copy is reused and the output says so.
+
+## Step 4 — only now open a reference
 
 `references/` exists to be consulted, not read up front. Open the one you need:
 `analysis-playbook.md` for the six-step analysis, `mode-internals.md` for codenames/rarity/pricing,

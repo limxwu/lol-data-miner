@@ -89,6 +89,39 @@ Counter map for ARAM Mayhem (all purchasable at mode prices):
 **Next** — what to report back (enemy comp, roll options) for a sharper call
 ```
 
+## Step 7 — fuse external guides (optional, high value, requires discipline)
+
+Stats answer *what is strong*; guides answer *how it is played* — build paths, combo lines, engage
+timing, why a comp works. That context is not in any JSON, so search for it:
+
+```
+web_search "海克斯大乱斗 <champion> 攻略 <patch>"
+web_search "ARAM Mayhem <champion> guide <patch>"
+web_search "海克斯大乱斗 套路 流派 出装"
+```
+
+Then apply the evidence ladder — never let a lower rung override a higher one:
+
+| Rung | Source | Trust |
+|---|---|---|
+| 1 | Client data (roster, rarity, ids, prices) | hard fact — decides whether a thing even exists |
+| 2 | op.gg stats (tier, performance, pick) | strong, but a model of outcomes, not truth |
+| 3 | Community guides / videos | useful for *patterns and execution*, names may be wrong |
+| 4 | LLM-written search summaries | **assume wrong** until verified; they invent augment names |
+
+**Mandatory gate:** run every named augment or item through `verify` before repeating it.
+
+```bash
+python "$S/scripts/lolmeta.py" verify 自我毁灭 小丑学院 最终都市列车
+```
+
+Measured on patch 26.18 from real search results: `自我毁灭`, `最终都市列车`, `毁坏仪式`, `物法双修`,
+`心之钢`, `盾魔转` **do not exist**; `最终都市列车` is real but only in `KIWI_JADE` (classic variant), i.e.
+the guide was describing a different mode. `小丑学院`, `俯冲轰炸`, `钢化你心`, `会心治疗`, `珠光护手` are real.
+
+When a name fails, restate the *mechanic* instead of the label — "stacks permanently on takedown",
+"crit damage converts to healing" — and say the guide's wording could not be verified.
+
 ## Anti-patterns (each one bit us)
 
 1. Quoting `performance` as a win rate.
@@ -97,3 +130,5 @@ Counter map for ARAM Mayhem (all purchasable at mode prices):
 4. Recommending an augment that the patch removed from the champion's pool.
 5. Treating a low pick rate as low value (often the opposite: rare = strong).
 6. Trusting an LLM-written summary of a guide site. Read the primary source; summaries invent numbers.
+7. Repeating an augment name from a guide without `verify` — half of them were invented in our sample.
+8. Mixing the Arena pool with ARAM Mayhem's (`verify` flags this as `MISLEAD`).

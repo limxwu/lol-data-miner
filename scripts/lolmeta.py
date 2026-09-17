@@ -251,16 +251,27 @@ def opgg_page(mode: str, locale: str, ttl: int) -> str:
     return html
 
 
-def pull_meta(mode: str, locale: str, ttl: int, force: bool = False) -> dict:
-    """One page fetch -> both datasets. This is the whole reason `meta` exists."""
+def pull_meta(mode: str, locale: str, ttl: int, force: bool = False,
+              version: str | None = None, version_getter=None) -> dict:
+    """One page fetch -> both datasets. This is the whole reason `meta` exists.
+
+    The cache is stamped with the Data Dragon version, so a patch bump invalidates it immediately
+    instead of letting a 15-minute TTL hand back last patch's tier list. Within one patch the data is
+    still refreshed on `ttl` because op.gg recomputes continuously.
+    """
     champ_file = OUT / cache_name(mode, "champions")
     aug_file = OUT / cache_name(mode, "augments")
+    stamp_file = OUT / cache_name(mode, "stamp")
+    if version is None:
+        version = version_getter() if version_getter else get_version(ttl)
     if not force and champ_file.exists() and aug_file.exists():
         age = time.time() - min(champ_file.stat().st_mtime, aug_file.stat().st_mtime)
-        if ttl < 0 or age < ttl:
+        stamped = read_json(stamp_file)
+        same_patch = bool(version) and (stamped or {}).get("ddragonVersion") == version
+        if (ttl < 0 or age < ttl) and (same_patch or not version):
             return {"champions": json.loads(champ_file.read_text(encoding="utf-8")),
                     "augments": json.loads(aug_file.read_text(encoding="utf-8")),
-                    "fromCache": True}
+                    "fromCache": True, "age": age, "patch": patch_label(version), "stale": False}
     payload = rsc_payload(opgg_page(mode, locale, -1 if force else ttl))
     champions, augments = parse_champions(payload), parse_augments(payload)
     if not champions or not augments:
@@ -268,7 +279,9 @@ def pull_meta(mode: str, locale: str, ttl: int, force: bool = False) -> dict:
                          "Re-check the mode slug, or report the change.")
     save(champ_file.name, champions)
     save(aug_file.name, augments)
-    return {"champions": champions, "augments": augments, "fromCache": False}
+    save(stamp_file.name, {"ddragonVersion": version, "fetchedAt": time.time(), "mode": mode})
+    return {"champions": champions, "augments": augments, "fromCache": False,
+            "patch": patch_label(version), "stale": False}
 
 
 def cache_name(mode: str, kind: str) -> str:
@@ -545,6 +558,51 @@ def cmd_brief(args) -> None:
         print(f"  {a['performance']:>6} [{a['rarity']:<9}] {a['name']:<16} pick {a['pick']:>5}%  {a['desc'][:60]}")
 
 
+MODE_CODE = {"aram-mayhem": "KIWI", "aram-mayhem-classic": "KIWI_JADE", "arena": "CHERRY"}
+
+
+def cmd_verify(args) -> None:
+    """Check names from a guide against the client roster before repeating them.
+
+    Search results, videos and community guides name augments that often do not exist — measured on
+    patch 26.18, half of the names in a typical "self-destruct comp" write-up were invented. Arena
+    (CHERRY) and ARAM Mayhem (KIWI) pools are also routinely confused with each other.
+    """
+    import difflib
+
+    version = get_version(args.cache_ttl)
+    client = pull_client(args.locale, args.client_ttl, version=version, with_items=args.with_items)
+    wanted = MODE_CODE.get(args.mode, args.mode.upper())
+
+    pool = next((m for m in client["modes"] if m["mode"] == wanted), None)
+    in_mode = {a["name"] for a in (pool or {}).get("augments", [])}
+    elsewhere = {m["mode"]: {a["name"] for a in m["augments"]} for m in client["modes"]}
+    items = {i["name"] for i in client.get("modeVariants", [])} | \
+            {i["name"] for i in client.get("prismaticPool", [])}
+
+    print(f"verifying against {wanted} ({len(in_mode)} augments)"
+          + (f" + {len(items)} mode items" if items else "  (items not loaded; --with-items to include)"))
+    unknown = 0
+    for term in args.terms:
+        if term in in_mode:
+            print(f"  ok      {term}")
+            continue
+        other = [m for m, names in elsewhere.items() if term in names]
+        if other:
+            print(f"  MISLEAD {term} — exists in {', '.join(other)}, NOT in {wanted}. "
+                  f"A guide is describing a different mode.")
+            continue
+        if term in items:
+            print(f"  ok      {term} (item)")
+            continue
+        unknown += 1
+        near = difflib.get_close_matches(term, sorted(in_mode | items), n=3, cutoff=0.4)
+        hint = f" closest real names: {' / '.join(near)}" if near else ""
+        print(f"  NOT FOUND {term} — not in {wanted} or any mode's roster.{hint}")
+    print(f"\n{len(args.terms) - unknown}/{len(args.terms)} verified. "
+          f"Never repeat a name that fails this check — the guide invented it.")
+
+
 def cmd_champions(args) -> None:
     for c in pull_meta(args.mode, args.locale, args.cache_ttl)["champions"]:
         print(f"{c['rank']:>3} T{c['tier']} {c['name']}")
@@ -668,6 +726,15 @@ def main() -> None:
     p_ver.add_argument("--out", help="output directory (unused; accepted for CLI symmetry)")
     p_ver.add_argument("--cache-ttl", type=int, default=900)
     p_ver.set_defaults(func=cmd_versions)
+
+    p_verify = sub.add_parser("verify",
+                              help="check augment/item names from a guide against the client roster")
+    p_verify.add_argument("terms", nargs="+", help="names to verify, e.g. 自我毁灭 小丑学院")
+    common(p_verify)
+    p_verify.add_argument("--cache-ttl", type=int, default=900)
+    p_verify.add_argument("--client-ttl", type=int, default=CLIENT_TTL)
+    p_verify.add_argument("--with-items", action="store_true", help="also check item names")
+    p_verify.set_defaults(func=cmd_verify)
 
     p_aug = sub.add_parser("augment", help="look up one augment by key or name fragment")
     p_aug.add_argument("key")
