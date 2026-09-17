@@ -4,6 +4,7 @@ An agent skill that mines **current-patch** League of Legends data — champion 
 item prices, patch-note text — and turns it into grounded match analysis instead of stale model recall.
 
 Built for ARAM Mayhem (海克斯大乱斗), Arena (斗魂竞技场), ARAM and SR-adjacent modes.
+中文说明见 [README.zh-CN.md](README.zh-CN.md).
 
 ```bash
 npx skills add limxwu/lol-data-miner
@@ -30,19 +31,25 @@ Everything is reproducible from public, key-less endpoints.
 One entry point, called by absolute path from any working directory:
 
 ```bash
-# everything, one command: patch, roster, items, tier list, augment stats
+# everything, one command: patch, roster, tier list, augment stats
 python "<skill>/scripts/lolmeta.py" refresh
 
 # then answer the actual question
-python "<skill>/scripts/lolmeta.py" invert --champion 提莫      # augments for one champion
+python "<skill>/scripts/lolmeta.py" brief  --champion 提莫      # patch + tier + augments, one call
+python "<skill>/scripts/lolmeta.py" invert --champion 提莫      # augments only
 python "<skill>/scripts/lolmeta.py" report                     # full tier list + both rankings
 python "<skill>/scripts/lolmeta.py" notes 37096116             # official CN patch notes -> text
-python "<skill>/scripts/lolmeta.py" items                      # item ids + mode prices
+python "<skill>/scripts/lolmeta.py" items                      # item ids + mode prices (opt-in)
 python "<skill>/scripts/lolmeta.py" lists                      # augment roster + rarity per mode
 ```
 
-`invert` resolves the champion name (`提莫`), their title (`迅捷斥候`) or the English key (`teemo`).
-Other modes: `--mode arena|aram|aram-mayhem-classic`. Cold `refresh` takes ~6 s, cached repeats ~0.2 s.
+`brief`/`invert` resolve the champion name (`提莫`), their title (`迅捷斥候`) or the English key (`teemo`).
+Other modes: `--mode arena|aram|aram-mayhem-classic`. Cold `refresh` ~2.5 s, cached repeats ~0.2 s.
+
+**Speed, measured:** op.gg and the client roster are fetched concurrently (they are independent hosts).
+The 680 KB item table is **opt-in** — CommunityDragon serves it at 11–90 KB/s from CN (18 s / 8 s / timeout
+on three consecutive tries), while Data Dragon moves the same volume in 0.4 s. Roster data is cached by
+patch, not by clock, so a successful pull lasts the whole patch.
 
 Requirements: Python 3.10+ and the system `curl` (present on Windows 10+). No API keys, no pip installs —
 standard library only.

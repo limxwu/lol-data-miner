@@ -40,6 +40,28 @@ Key facts:
 - Directory listings are browsable HTML (`raw.communitydragon.org/latest/cdragon/`), useful for discovery.
 - Dead path: `plugins/rcp-be-lol-game-data/global/default/v1/augments.json` → 404. Don't use it.
 
+### Network reality (measured from CN, 2026-09)
+
+`raw.communitydragon.org` is **slow and unreliable from China** — this is the single biggest source of
+"the item data won't download" reports:
+
+| Endpoint | Size | Measured |
+|---|---|---|
+| CommunityDragon `items.json` | 680 KB | **18.1 s → 7.9 s → 45 s timeout** (11–90 KB/s) |
+| Data Dragon `item.json` | 691 KB | **0.45 s / 0.40 s** (1.5–1.7 MB/s) |
+
+Consequences baked into `lolmeta.py`:
+
+- **`items.json` is opt-in** (`items --force`), never part of `refresh`. The roster (`augment-lists` +
+  `cherry-augments`, ~140 KB combined) is what the analysis actually needs.
+- Item responses are cached **per patch**, so one successful pull covers the whole patch; a later failure
+  reuses that cache instead of leaving the user with nothing.
+- jsDelivr mirrors of CommunityDragon do **not** exist (`CommunityDragon/Data` → 404), so there is no
+  fast CDN fallback. Budget the timeout accordingly (150 s for this file).
+- There is **no CN-first-party equivalent**: lol.qq.com exposes web pages and patch notes, not structured
+  data. Item and augment IDs are identical to global, and `zh_cn` localization is already what we pull —
+  so "use the CN source" is not available and would not change these numbers.
+
 ## 3. op.gg (tier list + augment stats)
 
 Page: `https://op.gg/<locale>/lol/modes/<mode>` (`aram-mayhem`, `aram`, `arena`, `aram-mayhem-classic`).

@@ -31,13 +31,15 @@ skill with your own file tools (glob for `**/.agents/skills/lol-data-miner/scrip
 that absolute path instead.
 
 `refresh` prints the patch (e.g. `26.18` / Data Dragon `16.18.1`), augment roster counts, item counts, the
-tier distribution and the top augments by performance, then names the next command. ~6 s cold, ~0.2 s from
-cache (15 min TTL; `--cache-ttl` / `--force` to control). JSON lands in `<skill>/out/`.
+tier distribution and the top augments by performance, then names the next command. ~2.5 s cold, ~0.2 s
+from cache. op.gg and the client roster are fetched **concurrently**; the 680 KB item table is skipped by
+default (CommunityDragon serves it at 11–90 KB/s from CN — 18 s / 8 s / timeout on three measured tries).
 
 ## Step 2 — answer the question
 
 | Need | Command |
 |---|---|
+| Everything for one champion (patch + tier + augments) | `python "$S/scripts/lolmeta.py" brief --champion 提莫` |
 | Augments for one champion | `python "$S/scripts/lolmeta.py" invert --champion 提莫` |
 | Full tier list + both augment rankings | `python "$S/scripts/lolmeta.py" report` |
 | What changed this patch | `python "$S/scripts/lolmeta.py" notes 37096116` (static page id) |
@@ -45,10 +47,11 @@ cache (15 min TTL; `--cache-ttl` / `--force` to control). JSON lands in `<skill>
 | Roster + rarity per mode | `python "$S/scripts/lolmeta.py" lists` |
 | Champion tier list only | `python "$S/scripts/lolmeta.py" champions` |
 
-`invert` accepts the champion's name (`提莫`), their title (`迅捷斥候`) or the English key (`teemo`) —
-all three resolve. Community-only nicknames (`女枪`, `VN`) do not; the error says so and tells you what works.
+`brief`/`invert` accept the champion's name (`提莫`), their title (`迅捷斥候`) or the English key
+(`teemo`) — all three resolve. Community-only nicknames (`女枪`, `VN`) do not; the error says what works.
 
 Other modes: add `--mode arena` / `--mode aram` / `--mode aram-mayhem-classic`. Other locales: `--locale en`.
+Item prices live behind `items`; if it fails, retry or `--force` — the roster and tier data are unaffected.
 
 ## Step 3 — only now open a reference
 

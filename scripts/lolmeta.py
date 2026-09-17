@@ -54,6 +54,7 @@ CDRAGON = "https://raw.communitydragon.org/latest"
 GAME_DATA = f"{CDRAGON}/plugins/rcp-be-lol-game-data/global"
 
 RARITY = {1: "Silver", 4: "Gold", 8: "Prismatic"}
+CLIENT_TTL = 43200  # 12h: client data only changes with the patch, and it is keyed by patch anyway
 CHAMPION_RE = re.compile(
     r'\{"key":"(\w+)","name":"([^"]+)","image_url":"[^"]*","champion_id":(\d+),"id":\d+,"tier":(\d+),"rank":(\d+)\}'
 )
@@ -274,14 +275,49 @@ def cache_name(mode: str, kind: str) -> str:
     return f"opgg_{mode.replace('-', '_')}_{kind}.json"
 
 
-def pull_client(locale: str, ttl: int, version: str | None = None) -> dict:
-    """Every source degrades independently: one slow host must not sink the whole command."""
+def get_version(ttl: int) -> str | None:
+    try:
+        return fetch_json(f"{DDRAGON}/api/versions.json", 30, ttl, allow_stale=True)[0]
+    except FetchError:
+        return None
+
+
+def patch_label(version: str | None) -> str | None:
+    if not version:
+        return None
+    major, minor = version.split(".")[:2]
+    return f"26.{minor}" if major == "16" else f"{major}.{minor}"
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def pull_client(locale: str, ttl: int, version: str | None = None, force: bool = False,
+                with_items: bool = False, version_getter=None) -> dict:
+    """Client roster, plus items only when asked.
+
+    Two deliberate choices, both driven by measurement:
+    - **items.json is opt-in.** It is 680 KB and CommunityDragon serves it at 11-90 KB/s from CN
+      (18 s / 8 s / 45 s timeout on three consecutive tries), so it must never sit in the default path.
+    - **the cache is keyed by patch, not by clock.** Client data only changes when the patch does, so a
+      successful pull stays valid for the whole patch instead of expiring every 15 minutes.
+
+    Every source still degrades on its own, and an item pull failure reuses whatever the last
+    successful pull of the same patch produced.
+    """
     if version is None:
-        try:
-            version = fetch_json(f"{DDRAGON}/api/versions.json", 30, ttl, allow_stale=True)
-        except FetchError as exc:
-            sys.stderr.write(f"warn: version lookup failed ({exc})\n")
-            version = None
+        version = version_getter() if version_getter else get_version(ttl)
+    cache_file = OUT / f"client_{norm_locale(locale)}.json"
+    cached = read_json(cache_file)
+    same_patch = cached if (cached and cached.get("ddragonVersion") == version) else None
+    if same_patch and not force:
+        fresh = ttl < 0 or (time.time() - cache_file.stat().st_mtime) < ttl
+        if fresh and (same_patch.get("modeVariants") or not with_items):
+            return same_patch
 
     def grab(url: str, timeout: int):
         try:
@@ -290,26 +326,26 @@ def pull_client(locale: str, ttl: int, version: str | None = None) -> dict:
             sys.stderr.write(f"warn: {url.rsplit('/', 1)[-1]} unavailable ({exc})\n")
             return None
 
+    jobs = {
+        "lists": (f"{GAME_DATA}/{norm_locale(locale)}/v1/augment-lists.json", 30),
+        "roster": (f"{GAME_DATA}/{norm_locale(locale)}/v1/cherry-augments.json", 45),
+    }
+    if with_items:
+        jobs["clientItems"] = (f"{GAME_DATA}/{norm_locale(locale)}/v1/items.json", 150)
+    if version:
+        jobs["srItems"] = (f"{DDRAGON}/cdn/{version}/data/{ddragon_locale(locale)}/item.json", 60)
+
     with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            "lists": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/augment-lists.json", 30),
-            "roster": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/cherry-augments.json", 45),
-            "clientItems": pool.submit(grab, f"{GAME_DATA}/{norm_locale(locale)}/v1/items.json", 60),
-        }
-        if version:
-            futures["srItems"] = pool.submit(
-                grab, f"{DDRAGON}/cdn/{version}/data/{ddragon_locale(locale)}/item.json", 60)
+        futures = {name: pool.submit(grab, url, timeout) for name, (url, timeout) in jobs.items()}
         got = {name: fut.result() for name, fut in futures.items()}
-    got.setdefault("srItems", None)
 
     missing = [name for name, value in got.items() if value is None] + ([] if version else ["version"])
-    lists = got["lists"] or []
-    roster = got["roster"] or []
-    client_items = got["clientItems"] or []
+    roster = got.get("roster") or []
+    client_items = got.get("clientItems") or []
 
     by_id = {a["augmentNameId"]: a for a in roster}
     modes = []
-    for entry in lists:
+    for entry in got.get("lists") or []:
         keys = [p.rsplit("/", 1)[-1] for p in entry["augmentList"]]
         counts: dict[str, int] = {}
         rows = []
@@ -325,14 +361,21 @@ def pull_client(locale: str, ttl: int, version: str | None = None) -> dict:
 
     variants = [i for i in client_items if str(i.get("id", "")).startswith("22") and len(str(i["id"])) == 6]
     prismatic = [i for i in client_items if str(i.get("id", "")).startswith("228")]
+    keep = same_patch or {}
+    variants_payload = ([{"id": i["id"], "name": i["name"], "price": i["priceTotal"]}
+                         for i in sorted(variants, key=lambda x: -x["priceTotal"])]
+                        if variants else keep.get("modeVariants", []))
+    prismatic_payload = ([{"id": i["id"], "name": i["name"], "price": i["priceTotal"]} for i in prismatic]
+                         if prismatic else keep.get("prismaticPool", []))
+    sr_count = len((got.get("srItems") or {}).get("data", {})) or keep.get("srItemCount", 0)
+
     payload = {
         "ddragonVersion": version,
         "locale": norm_locale(locale),
-        "srItemCount": len((got["srItems"] or {}).get("data", {})),
-        "modes": modes,
-        "modeVariants": [{"id": i["id"], "name": i["name"], "price": i["priceTotal"]}
-                         for i in sorted(variants, key=lambda x: -x["priceTotal"])],
-        "prismaticPool": [{"id": i["id"], "name": i["name"], "price": i["priceTotal"]} for i in prismatic],
+        "srItemCount": sr_count,
+        "modes": modes or keep.get("modes", []),
+        "modeVariants": variants_payload,
+        "prismaticPool": prismatic_payload,
         "unavailable": missing,
     }
     save(f"client_{norm_locale(locale)}.json", payload)
@@ -342,19 +385,35 @@ def pull_client(locale: str, ttl: int, version: str | None = None) -> dict:
 # --------------------------------------------------------------------------- commands
 
 def cmd_refresh(args) -> None:
-    """The one command a fresh session needs."""
+    """The one command a fresh session needs.
+
+    Patch first (Data Dragon is fast: ~0.4 s measured, 1.5 MB/s from CN), then op.gg and the client
+    roster are pulled **concurrently** — they are independent hosts, and previously they were two
+    sequential waits. Items are opt-in: `items.json` is 680 KB served at 11-90 KB/s by
+    CommunityDragon from CN (18 s / 8 s / timeout on three tries), so it would dominate every run.
+    """
     started = time.time()
     print(f"# league patch pull — mode={args.mode} locale={args.locale}\n")
-    try:
-        version = fetch_json(f"{DDRAGON}/api/versions.json", 30, args.cache_ttl, allow_stale=True)[0]
-        major, minor = version.split(".")[:2]
-        patch = f"26.{minor}" if major == "16" else f"{major}.{minor}"
-        print(f"patch        : {patch}  (Data Dragon {version})")
-    except FetchError as exc:
-        version, patch = None, None
-        print(f"patch        : unknown — {exc}")
 
-    client = pull_client(args.locale, args.cache_ttl, version=version)
+    version = get_version(args.cache_ttl)
+    patch = patch_label(version)
+    print(f"patch        : {patch}  (Data Dragon {version})" if version
+          else "patch        : unknown — Data Dragon unavailable")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_client = pool.submit(pull_client, args.locale, args.client_ttl, version, args.force,
+                               args.with_items)
+        f_meta = pool.submit(pull_meta, args.mode, args.locale, args.cache_ttl, args.force)
+        try:
+            client = f_client.result()
+        except FetchError as exc:
+            client = {"modes": [], "modeVariants": [], "prismaticPool": [], "srItemCount": 0,
+                      "unavailable": [f"client data ({exc})"]}
+        try:
+            meta, meta_error = f_meta.result(), None
+        except FetchError as exc:
+            meta, meta_error = None, exc
+
     for mode in client["modes"]:
         if mode["mode"] in ("KIWI", "CHERRY"):
             r = mode["rarity"]
@@ -362,13 +421,18 @@ def cmd_refresh(args) -> None:
                   f"(Silver {r.get('Silver', 0)} / Gold {r.get('Gold', 0)} / Prismatic {r.get('Prismatic', 0)})")
     if client["modeVariants"]:
         print(f"items        : {client['srItemCount']} SR | {len(client['modeVariants'])} mode variants "
-              f"| {len(client['prismaticPool'])} prismatic")
+              f"| {len(client['prismaticPool'])} prismatic"
+              + ("" if args.with_items else "   (`items` to refresh; skipped by default)"))
+    else:
+        print("items        : not pulled — run `items` when you need prices "
+              "(CommunityDragon is slow from CN, so it is opt-in)")
     if client["unavailable"]:
         print(f"! partial pull: {', '.join(client['unavailable'])} unavailable — "
               f"answer without those numbers and say they are missing")
 
-    try:
-        meta = pull_meta(args.mode, args.locale, args.cache_ttl, force=args.force)
+    if meta_error is not None:
+        print(f"\n! op.gg unavailable — continuing with client data only.\n  {meta_error}")
+    else:
         champs, augs = meta["champions"], meta["augments"]
         print(f"tier list    : {len(champs)} champions, tiers " +
               "/".join(f"T{t}={sum(1 for c in champs if c['tier'] == t)}" for t in sorted({c['tier'] for c in champs})))
@@ -377,8 +441,6 @@ def cmd_refresh(args) -> None:
         for row in augs[:8]:
             print(f"  {row['performance']:>6}  [{row['rarity']:<9}] {row['name']:<16} pick {row['pick']}%")
         print("\nTier 1 champions: " + "、".join(c["name"] for c in champs if c["tier"] == 1))
-    except FetchError as exc:
-        print(f"\n! op.gg unavailable — continuing with client data only.\n  {exc}")
 
     print(f"\nfiles       : {OUT}")
     print(f"elapsed     : {time.time() - started:.1f}s")
@@ -452,6 +514,37 @@ def cmd_invert(args) -> None:
         print(f"  {a['performance']:>6} [{a['rarity']:<9}] {a['name']:<16} pick {a['pick']:>5}%  {a['desc'][:64]}")
 
 
+def cmd_brief(args) -> None:
+    """Patch + tier + one champion's augments in a single call: the 'write me a guide' entry point."""
+    version = get_version(args.cache_ttl)
+    meta = pull_meta(args.mode, args.locale, args.cache_ttl)
+
+    needle = args.champion.strip().lower()
+    aliases = champion_aliases(args.locale, args.cache_ttl)
+    resolved = aliases.get(needle)
+    champ = next((c for c in meta["champions"]
+                  if c["key"].lower() == resolved or needle in c["name"].lower()), None)
+
+    print(f"patch  : {patch_label(version)}  (Data Dragon {version})" if version else "patch  : unknown")
+    print(f"mode   : {args.mode}")
+    if champ:
+        print(f"tier   : T{champ['tier']}  (rank {champ['rank']}/"
+              f"{len(meta['champions'])} in this mode — op.gg order, 1 = best)")
+    else:
+        print(f"tier   : {args.champion} not found in the op.gg tier list for {args.mode}")
+
+    hits = [a for a in meta["augments"]
+            if (resolved and resolved in a.get("championKeys", []))
+            or any(needle in n.lower() for n in a["champions"])]
+    if not hits:
+        print(f"\nop.gg flags no augment for {args.champion!r} in this mode — reason from the champion's kit "
+              f"instead, and say the data is missing.")
+        return
+    print(f"\n{args.champion} — {len(hits)} flagged augments (op.gg performance, not win rate):")
+    for a in sorted(hits, key=lambda x: -(x["performance"] or 0)):
+        print(f"  {a['performance']:>6} [{a['rarity']:<9}] {a['name']:<16} pick {a['pick']:>5}%  {a['desc'][:60]}")
+
+
 def cmd_champions(args) -> None:
     for c in pull_meta(args.mode, args.locale, args.cache_ttl)["champions"]:
         print(f"{c['rank']:>3} T{c['tier']} {c['name']}")
@@ -463,7 +556,7 @@ def cmd_augments(args) -> None:
 
 
 def cmd_lists(args) -> None:
-    payload = pull_client(args.locale, args.cache_ttl)
+    payload = pull_client(args.locale, args.client_ttl)
     for mode in payload["modes"]:
         r = mode["rarity"]
         print(f"{mode['mode']:<10} {mode['total']:>4} augments  "
@@ -472,10 +565,11 @@ def cmd_lists(args) -> None:
 
 
 def cmd_items(args) -> None:
-    payload = pull_client(args.locale, args.cache_ttl)
+    payload = pull_client(args.locale, args.client_ttl, force=args.force, with_items=True)
     if not payload["modeVariants"]:
         raise FetchError(f"client item data unavailable this run ({', '.join(payload['unavailable']) or 'unknown'}). "
-                         f"Retry, or re-run with --force.")
+                         f"CommunityDragon is slow from CN (~11-90 KB/s for 680 KB) — retry, or re-run with "
+                         f"--force. Roster and patch data are unaffected.")
     print(f"SR items: {payload['srItemCount']} | mode variants: {len(payload['modeVariants'])} "
           f"| prismatic pool: {len(payload['prismaticPool'])}")
     for item in [i for i in payload["modeVariants"] if i["price"] >= 3000]:
@@ -534,8 +628,18 @@ def main() -> None:
     p_refresh = sub.add_parser("refresh", help="pull everything and print a summary")
     common(p_refresh)
     p_refresh.add_argument("--cache-ttl", type=int, default=900, help="seconds; 0 bypasses cache")
+    p_refresh.add_argument("--client-ttl", type=int, default=CLIENT_TTL,
+                           help="seconds for client data (roster); keyed by patch too")
+    p_refresh.add_argument("--with-items", action="store_true",
+                           help="also pull the 680KB item table (slow from CN; `items` does this too)")
     p_refresh.add_argument("--force", action="store_true")
     p_refresh.set_defaults(func=cmd_refresh)
+
+    p_brief = sub.add_parser("brief", help="patch + tier + augments for one champion, in one call")
+    p_brief.add_argument("--champion", required=True)
+    common(p_brief)
+    p_brief.add_argument("--cache-ttl", type=int, default=900)
+    p_brief.set_defaults(func=cmd_brief)
 
     for name, fn in (("meta", cmd_meta), ("report", cmd_report), ("champions", cmd_champions),
                      ("augments", cmd_augments)):
@@ -555,9 +659,14 @@ def main() -> None:
         p = sub.add_parser(name)
         common(p, need_mode=False)
         p.add_argument("--cache-ttl", type=int, default=900)
+        p.add_argument("--client-ttl", type=int, default=CLIENT_TTL)
+        if fn is cmd_items:
+            p.add_argument("--force", action="store_true")
         p.set_defaults(func=fn)
 
     p_ver = sub.add_parser("versions", help="latest Data Dragon version + patch mapping")
+    p_ver.add_argument("--out", help="output directory (unused; accepted for CLI symmetry)")
+    p_ver.add_argument("--cache-ttl", type=int, default=900)
     p_ver.set_defaults(func=cmd_versions)
 
     p_aug = sub.add_parser("augment", help="look up one augment by key or name fragment")
